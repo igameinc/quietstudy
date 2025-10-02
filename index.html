@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="zh-cn">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>鸡西实验中学高一学年安静自习</title>
+    <link rel="icon" href="https://bigjackson.top/images/avatar.jpg" type="image/x-icon">
+	<style>
+	body { margin: 0; overflow: hidden; background: linear-gradient(180deg,#232a34 0%,#181c22 100%); }
+		canvas { display: block; }
+	</style>
+</head>
+<body>
+	<div id="dbBar" style="position:fixed;top:0;left:0;height:18px;width:calc(100vw - 300px);background:#333;z-index:20;display:flex;align-items:center;">
+		<div id="dbProgress" style="height:100%;background:linear-gradient(90deg,#4caf50,#ffd700,#ff4444);border-radius:9px 0 0 9px;transition:width 0.2s;"></div>
+		<span id="dbValue" style="position:absolute;left:16px;top:0;font-size:15px;color:#fff;font-weight:bold;letter-spacing:2px;">0 dB</span>
+	</div>
+	<div id="micAuth" style="position:fixed;top:0;left:0;width:100vw;height:100vh;background:rgba(34,34,34,0.95);z-index:10;display:flex;flex-direction:column;align-items:center;justify-content:center;">
+		<h2 style="color:#fff;">需要麦克风权限</h2>
+		<p style="color:#ccc;">请点击下方按钮并允许浏览器访问麦克风</p>
+		<button id="authBtn" style="font-size:1.2em;padding:0.5em 2em;border-radius:8px;border:none;background:#4caf50;color:#fff;cursor:pointer;">授权麦克风</button>
+	</div>
+	<div id="sidePanel" style="position:fixed;top:0;right:0;width:300px;height:100vh;background:rgba(30,30,30,0.95);z-index:5;color:#fff;padding:24px 18px;box-shadow:-2px 0 8px #0003;display:flex;flex-direction:column;gap:18px;font-family:sans-serif;">
+		<div style="font-size:20px;font-weight:bold;color:#ffd700;text-align:center;margin-bottom:10px;">鸡西实验中学高一学年安静自习</div>
+		<div style="display:flex;align-items:center;justify-content:space-between;">
+			<h3 style="margin:0;">参数面板</h3>
+			<button id="settingBtn" style="padding:4px 16px;border-radius:6px;border:none;background:#4caf50;color:#fff;cursor:pointer;font-size:1em;">设置</button>
+		</div>
+		<div>选择麦克风：<select id="micSelect" style="width:180px;"></select></div>
+		<div>当前分贝：<span id="volVal">0</span> dB</div>
+	<!-- 已删除球数量显示 -->
+		<!-- 已删除球最大数量和球消失延迟相关内容 -->
+	</div>
+		<canvas id="ballCanvas"></canvas>
+        
+		<div id="settingModal" style="display:none;position:fixed;top:0;left:0;width:100vw;height:100vh;background:rgba(34,34,34,0.7);z-index:100;align-items:center;justify-content:center;">
+			<div style="background:#222;padding:32px 40px;border-radius:16px;box-shadow:0 4px 24px #0006;min-width:320px;display:flex;flex-direction:column;align-items:center;">
+				<h2 id="modalTitle" style="color:#fff;margin-bottom:10px;">设置</h2>
+				<p style="color:#ccc;font-size:15px;margin-bottom:18px;text-align:center;">
+					本程序用于检测教室自习时的安静情况，通过麦克风实时分析环境声音分贝，<br>并以彩球动画形式进行可视化展示。参数可在右侧面板调整，支持多麦克风选择。
+				</p>
+				<button id="micPermBtn" style="font-size:1.1em;padding:0.5em 2em;border-radius:8px;border:none;background:#4caf50;color:#fff;cursor:pointer;margin-bottom:10px;">麦克风权限申请</button>
+				<button id="closeSetting" style="font-size:1em;padding:0.3em 1.5em;border-radius:8px;border:none;background:#555;color:#fff;cursor:pointer;">关闭</button>
+			</div>
+		</div>
+	<script>
+	const dbBar = document.getElementById('dbBar');
+	const dbProgress = document.getElementById('dbProgress');
+	const dbValue = document.getElementById('dbValue');
+		const canvas = document.getElementById('ballCanvas');
+		const ctx = canvas.getContext('2d');
+		let balls = [];
+		let lastSoundTime = Date.now();
+
+		// 参数面板相关变量
+		let sens = 0.05;
+		let currentVolume = 0;
+		let currentDb = 0;
+
+		// 右侧面板元素
+		const volVal = document.getElementById('volVal');
+	// 已删除球数量相关元素
+		// 已去除球最大数量和消失延迟相关元素
+		const micSelect = document.getElementById('micSelect');
+
+		// 已去除球最大数量和消失延迟相关事件
+
+		// 麦克风设备列表和切换
+		let audioStream = null;
+		let audioCtx = null;
+		let analyser = null;
+		let mic = null;
+		let dataArray = null;
+		let detectTimer = null;
+
+		function stopAudio() {
+			if (audioStream) {
+				audioStream.getTracks().forEach(track => track.stop());
+				audioStream = null;
+			}
+			if (audioCtx) {
+				audioCtx.close();
+				audioCtx = null;
+			}
+			if (detectTimer) {
+				clearTimeout(detectTimer);
+				detectTimer = null;
+			}
+		}
+
+		function startAudio(deviceId) {
+			stopAudio();
+			navigator.mediaDevices.getUserMedia({ audio: { deviceId: deviceId ? { exact: deviceId } : undefined } }).then(stream => {
+				audioStream = stream;
+				audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+				analyser = audioCtx.createAnalyser();
+				mic = audioCtx.createMediaStreamSource(stream);
+				analyser.fftSize = 512;
+				mic.connect(analyser);
+				dataArray = new Uint8Array(analyser.fftSize);
+
+				function detectVolume() {
+					analyser.getByteTimeDomainData(dataArray);
+					let sum = 0;
+					for (let i = 0; i < dataArray.length; i++) {
+						let v = (dataArray[i] - 128) / 128;
+						sum += v*v;
+					}
+					const volume = Math.sqrt(sum / dataArray.length);
+					currentVolume = volume;
+					if (volume > sens) {
+						lastSoundTime = Date.now();
+						// 声音越大，球弹得越高，方向随机，力度更大
+						balls.forEach(ball => {
+        const angle = Math.random() * Math.PI * 2; // 0~360°
+        const speed = 18 + volume * 32; // 提高弹跳力度
+        ball.vx = Math.cos(angle) * speed;
+        ball.vy = -Math.abs(Math.sin(angle) * speed);
+        ball.jumping = true;
+    });
+					}
+					detectTimer = setTimeout(detectVolume, 80);
+				}
+				detectVolume();
+			}).catch(err => {
+				alert('无法访问麦克风: ' + err);
+			});
+		}
+
+		function updateMicList() {
+			navigator.mediaDevices.enumerateDevices().then(devices => {
+				const mics = devices.filter(d => d.kind === 'audioinput');
+				micSelect.innerHTML = '';
+				mics.forEach((micDev, idx) => {
+					const option = document.createElement('option');
+					option.value = micDev.deviceId;
+					option.textContent = micDev.label || `麦克风${idx+1}`;
+					micSelect.appendChild(option);
+				});
+			});
+		}
+
+		micSelect.onchange = function() {
+			startAudio(this.value);
+		};
+
+		function resizeCanvas() {
+			canvas.width = window.innerWidth;
+			canvas.height = window.innerHeight;
+		}
+		window.addEventListener('resize', resizeCanvas);
+		resizeCanvas();
+
+		function randomColor() {
+			// 纯色弹力球风格，全部高饱和度纯色
+			const palette = [
+				'#FF0000', // 红
+				'#FF8000', // 橙
+				'#FFFF00', // 黄
+				'#00FF00', // 绿
+				'#00FFFF', // 青
+				'#0000FF', // 蓝
+				'#8000FF', // 紫
+				'#FF00FF', // 粉
+				'#FFFFFF', // 白
+				'#888888'  // 灰
+			];
+			return palette[Math.floor(Math.random()*palette.length)];
+		}
+
+		let justRecovered = false;
+		function addBalls() {
+			// 页面初始化时生成球，球始终存在底部
+			if (balls.length > 0) return;
+			const minRadius = 18;
+			const maxRadius = 89;
+			const count = 30;
+			for (let i = 0; i < count; i++) {
+				let tries = 0;
+				let x, y, r;
+				let overlap;
+				r = minRadius + Math.random() * (maxRadius - minRadius);
+				// 右侧栏宽度 300px，球只在左侧主区域生成，允许重叠
+				const rightPanelWidth = 300;
+				x = Math.random() * (canvas.width - rightPanelWidth - 2*r) + r;
+				y = canvas.height - r - Math.random() * (canvas.height * 0.5);
+				if (!overlap) {
+					balls.push({
+						x,
+						y,
+						r,
+						color: randomColor(),
+						// 初始化时给每个球不同的水平速度和轻微漂移
+						vx: (Math.random()-0.5)*2.5 + Math.sin(i)*1.2,
+						vy: (Math.random()-0.5)*1.2,
+						alpha: 0.8,
+						fading: false
+					});
+				}
+			}
+		}
+
+		function drawBalls() {
+			ctx.clearRect(0, 0, canvas.width, canvas.height);
+			// 球移动和碰撞检测
+			// 按y坐标从小到大排序，保证视觉堆叠
+			balls.sort((a,b)=>a.y-b.y);
+			for (let i = 0; i < balls.length; i++) {
+				let ball = balls[i];
+				ball.x += ball.vx;
+				ball.y += ball.vy;
+				// 边界反弹并限制不出边框
+				if (ball.x < ball.r) {
+					ball.x = ball.r;
+					ball.vx *= -1;
+				}
+				// 限制球不会进入右侧栏，右边界为右侧栏最左侧
+				const rightPanelWidth = 300;
+				const rightLimit = canvas.width - rightPanelWidth;
+				if (ball.x + ball.r > rightLimit) {
+					ball.x = rightLimit - ball.r;
+					ball.vx *= -1;
+				}
+				if (ball.y < ball.r) {
+					ball.y = ball.r;
+					ball.vy *= -1;
+				}
+				if (ball.y > canvas.height-ball.r) {
+					ball.y = canvas.height-ball.r;
+					ball.vy = 0;
+					ball.vx = 0;
+				}
+				// 球与球之间碰撞检测
+				for (let j = i+1; j < balls.length; j++) {
+					let other = balls[j];
+					let dx = other.x - ball.x;
+					let dy = other.y - ball.y;
+					let dist = Math.sqrt(dx*dx + dy*dy);
+					let minDist = ball.r + other.r;
+					if (dist < minDist && dist > 0) {
+						// 计算重叠量
+						let overlap = minDist - dist;
+						// 归一化方向
+						let nx = dx / dist;
+						let ny = dy / dist;
+						// 两球分别弹开
+						ball.x -= nx * overlap/2;
+						ball.y -= ny * overlap/2;
+						other.x += nx * overlap/2;
+						other.y += ny * overlap/2;
+						// 简单速度交换
+						let tempVx = ball.vx;
+						let tempVy = ball.vy;
+						ball.vx = other.vx;
+						ball.vy = other.vy;
+						other.vx = tempVx;
+						other.vy = tempVy;
+					}
+				}
+			}
+			// 绘制球，按y坐标从下到上堆叠
+			balls.forEach(ball => {
+				// 立体渐变球
+				const grad = ctx.createRadialGradient(
+					ball.x - ball.r*0.4, ball.y - ball.r*0.4, ball.r*0.2,
+					ball.x, ball.y, ball.r
+				);
+				grad.addColorStop(0, 'rgba(255,255,255,0.8)');
+				grad.addColorStop(0.3, ball.color);
+				grad.addColorStop(0.9, ball.color);
+				grad.addColorStop(1, '#222');
+				ctx.beginPath();
+				ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI*2);
+				ctx.fillStyle = grad;
+				ctx.globalAlpha = ball.alpha;
+				ctx.fill();
+				ctx.globalAlpha = 1;
+				// 黑色描边
+				ctx.lineWidth = 3;
+				ctx.strokeStyle = '#222';
+				ctx.stroke();
+			});
+		}
+
+		let silent = false;
+		function removeBallsIfSilent() {
+			// 空函数，球不再消失
+		}
+
+		function animate() {
+	// 物理参数调整：减小重力，让球弹跳更轻盈
+	balls.forEach(ball => {
+		// 减弱重力
+		ball.vy += 0.35;
+		ball.x += ball.vx;
+		ball.y += ball.vy;
+		// 到达底部静止
+		if (ball.y > canvas.height-ball.r) {
+			ball.y = canvas.height-ball.r;
+			ball.vy = 0;
+			ball.vx = 0;
+		}
+		// 边界反弹
+		if (ball.x < ball.r) {
+			ball.x = ball.r;
+			ball.vx *= -1;
+		}
+		if (ball.x > canvas.width-ball.r) {
+			ball.x = canvas.width-ball.r;
+			ball.vx *= -1;
+		}
+	});
+    drawBalls();
+    removeBallsIfSilent();
+    // 分贝计算（volume为0时显示0），偏移100保证为正
+			currentDb = currentVolume > 0 ? (20 * Math.log10(currentVolume) + 100).toFixed(1) : 0;
+			volVal.textContent = currentDb;
+			dbValue.textContent = currentDb + ' dB';
+			// 分贝进度条宽度，假定最大120dB
+			const maxDb = 120;
+			const percent = Math.min(currentDb / maxDb, 1);
+			dbProgress.style.width = (percent * dbBar.offsetWidth) + 'px';
+			// 已删除球数量显示
+    requestAnimationFrame(animate);
+}
+	addBalls();
+	animate();
+
+		// 授权按钮逻辑
+		const micAuth = document.getElementById('micAuth');
+		const authBtn = document.getElementById('authBtn');
+		const settingBtn = document.getElementById('settingBtn');
+		const settingModal = document.getElementById('settingModal');
+		const micPermBtn = document.getElementById('micPermBtn');
+		const closeSetting = document.getElementById('closeSetting');
+
+	// 首次加载不弹出麦克风授权
+		// 首次加载弹出“开始使用”弹窗
+		micAuth.style.display = 'none';
+		const modalTitle = document.getElementById('modalTitle');
+		settingModal.style.display = 'flex';
+		modalTitle.textContent = '开始使用';
+
+		// 设置按钮弹出自定义设置弹窗
+		settingBtn.onclick = function() {
+			settingModal.style.display = 'flex';
+			modalTitle.textContent = '设置';
+		};
+		closeSetting.onclick = function() {
+			settingModal.style.display = 'none';
+			modalTitle.textContent = '设置';
+		};
+		micPermBtn.onclick = function() {
+			micAuth.style.display = 'flex';
+			settingModal.style.display = 'none';
+		};
+		authBtn.onclick = function() {
+			navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+				micAuth.style.display = 'none';
+				// 获取设备列表
+				updateMicList();
+				// 默认用第一个设备
+				startAudio();
+			}).catch(err => {
+				alert('无法访问麦克风: ' + err);
+			});
+		};
+	</script>
+</body>
+</html>
